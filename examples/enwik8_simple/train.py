@@ -23,10 +23,10 @@ LEARNING_RATE = 1e-4
 VALIDATE_EVERY  = 100
 
 GENERATE_EVERY  = 500
-PRIME_LENGTH    = 15
+PRIME_LENGTH    = 5
 GENERATE_LENGTH = 1024
 
-SEQ_LEN = 50
+SEQ_LEN = 15
 # NUM_SEGMENTS = 4
 NUM_SEGMENTS = 1
 
@@ -103,7 +103,7 @@ from attrdict import AttrDict
 params = AttrDict(dict(
 L = 5,
 K = 7,
-E = 11,
+E = 21,
 B = 3,
 M = 12,
 EPS = 1E-8,
@@ -112,7 +112,7 @@ EPS = 1E-8,
 betasq           = 12. ,  ### less noise in posterior
 betasq_2         = 12.  ,
 
-inner_nsample = 3,  ### how many samples to be taken to estimate elbo
+inner_nsample = 1,  ### how many samples to be taken to estimate elbo
 inner_nstep   = 10,
 inner_lr      = 0.03,
 
@@ -129,9 +129,20 @@ loss_fn  = lambda x: model.loss_joint_lp(x,is_ar_loss=False)
 optim = torch.optim.RMSprop(model.parameters(), lr=LEARNING_RATE)
 
 
+NUM_BATCHES = 10
 
+for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=1., desc='training'):
 
-for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
+    if i % VALIDATE_EVERY == 0:
+        model.eval()
+        # with torch.no_grad():
+        if 1:
+            vdata = next(val_loader)
+            # if not len(val_loader):
+            loss = loss_fn(vdata)
+            print(f'validation loss: {loss.item():.4f}')
+
+    optim.zero_grad()
 
     model.train()
     grad_accum_every = BATCH_SIZE / MAX_BATCH_SIZE
@@ -155,20 +166,14 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     #         optim.step()
     #         optim.zero_grad()
 
-    if i % VALIDATE_EVERY == 0:
-        model.eval()
-        with torch.no_grad():
-            vdata = next(val_loader)
-            loss = loss_fn(vdata)
-            print(f'validation loss: {loss.item():.4f}')
 
-    if i % GENERATE_EVERY == 0:
-        model.eval()
-        inp = random.choice(val_dataset)[:-1]
-        inp = inp[:PRIME_LENGTH]
-        prime = decode_tokens(inp)
-        print(f'%s \n\n %s', (prime, '*' * 100))
+    # if i % GENERATE_EVERY == 0:
+    #     model.eval()
+    #     inp = random.choice(val_dataset)[:-1]
+    #     inp = inp[:PRIME_LENGTH]
+    #     prime = decode_tokens(inp)
+    #     print(f'%s \n\n %s', (prime, '*' * 100))
 
-        sample = model.generate(inp, GENERATE_LENGTH)
-        output_str = decode_tokens(sample)
-        print(output_str)
+    #     sample = model.generate(inp, GENERATE_LENGTH)
+    #     output_str = decode_tokens(sample)
+    #     print(output_str)
