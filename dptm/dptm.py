@@ -264,6 +264,7 @@ class DPT(nn.Module):
     #node_ie_exp        # (B,  M,  2L,  2K,  2L,  E)
     node_ie_exp     = node_ie[:,:,:,None,None].repeat((1,1,1, 2*K, 2*L,1)).clone()
     node_ie_exp     = torch.tensor(node_ie_exp,device=device,requires_grad=True)
+    # node_ie_exp     = node_ie_exp.detach().requires_grad_(True)
     
     #### getting the 
     #node_ie_par_prop     # (B,  M,  2L,  2K,  2L, E)  
@@ -273,7 +274,7 @@ class DPT(nn.Module):
     def add_noise(lat,betasq):
       sigma = (1./betasq)**0.5
       noise = torch.normal(0., sigma, size=lat.shape, device=device)              
-      return lat+noise,noise
+      return (lat+noise, noise)
 
 
     is_mask_last     = is_ar_loss
@@ -352,7 +353,9 @@ class DPT(nn.Module):
         x.data.sub_( inner_lr * x.grad.data )
         x.grad = None
       # print(f'loss={loss.detach().numpy()}')
-
+    # [x.grad =N]
+    for x in self.parameters():
+      x.grad = None
     opt_logp_max       = opt_logp
 
     if is_ar_loss:
@@ -450,8 +453,9 @@ class DPT(nn.Module):
     max_t = bm_dict_next.max_t 
     
     for t in range(0,  max_t):
-        bm_dict = self._inner_loop( bm_dict_next, t, max_t, is_ar_loss=is_ar_loss)
-        bm_dict_next = bm_dict
+      print(f'[t={t}]')
+      bm_dict = self._inner_loop( bm_dict_next, t, max_t, is_ar_loss=is_ar_loss)
+      bm_dict_next = bm_dict
 
     if is_ar_loss:
       loss_bm = bm_dict_next.lp_ar
