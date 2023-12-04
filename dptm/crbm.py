@@ -6,148 +6,19 @@ import torch.nn as nn
 # from transformer.data import data_utils
 
 
-# def get_attn_pad_mask(seq_q, seq_k):
-#     assert seq_q.dim() == 2 and seq_k.dim() == 2
-#     b_size, len_q = seq_q.size()
-#     b_size, len_k = seq_k.size()
-#     pad_attn_mask = seq_k.data.eq(data_utils.PAD).unsqueeze(1)  # b_size x 1 x len_k
-#     return pad_attn_mask.expand(b_size, len_q, len_k)  # b_size x len_q x len_k
-
-def expand_graph_proposals(params, node_par, node_par_k, t):
-  '''
-  expand graph to cover proposals
-
-  # node_par_next  = None     ### (B, M, 2L)
-  # node_par_k_next= None     ### (B, M, 2L)
-  
-  #node_par_prop        (B,  M,  2L,  2K,  2L)
-  #node_par_k_prop      (B,  M,  2L,  2K,  2L)
-  #opt_prior_cond       (B,  M,  2K,  2L)
-
-  (node_par_prop,  
-    node_par_k_prop, 
-    opt_prior_cond) = expand_graph_proposals(
-      self.params, node_par, node_par_k, t)  
-  '''
-  # L      = params.L
-  K      = params.K
-  E      = params.E
-  EPS = params.EPS
-  device = node_par.device
-  L =  node_par.shape[2]//2
-  B = len(node_par)
-  M = params.M
-  # B = params.B
-
-  ### npar points to current parent of this node
-  ### store the parent information about each node
-  ### update the topology
-  node_par           # (B,  M,  2L,)  ## the index of parent
-  # node_par_exp     # (B,  M,  2L,  O=2L)  ## the index of parent
-  node_par_exp       = node_par[:,:,:,None,]
-  node_par_exp       = node_par_exp.expand(*(B,M,2*L,2*L)).clone()
-  node_sib           = torch.arange(2*L, device=device)[None,None,None,:]
-  
-  sib_idx_1 = torch.arange(2*L, device=device)[:,None]
-  sib_idx_2 = sib_idx_1
-  # sib_idx_1 = torch.arange(2*L, device=device)[None,:].repeat((2*L,1))
-  # torch.arange(2*L, device=device)[:,None].repeat((1,  1))
-  # sib_idx_2 = torch.arange(2*L, device=device)[:,None].repeat((1,  1))
-
-  node_par_exp_c     = node_par_exp.clone()
-  node_par_exp_c[:,:,sib_idx_1,sib_idx_2] = (L+t)  ### connect the sibling to the new internal node
-  node_par_exp_c[:,:,t,:]                 = (L+t)  ### connect the new external to the new internal node.
-  if t>0:
-    ### connect the new internal node to the 
-    node_par_exp_c[:,:,L+t,:]   = node_par_exp[:,:, sib_idx_1,sib_idx_2].squeeze(-1)
-
-
-  node_par_k         # (B,  M,  2L,  1,  1, )  ## the type of connection to parent
-  node_par_k         # (B,  M,  2L,  2K,  2L, )  ## the type of connection to parent
-  node_par_k_exp     = node_par_k[:,:,:,None,None].expand(*(B,M,2*L,2*K,2*L))
-
-  k_new = torch.arange(2*K,device=device)[:,None].expand(*(2*K,2*L))
-  k_sib = (k_new + K) % (2*K) 
-
-
-  ## (K,L) matrix
-  idx_sib_x  = torch.arange(2*L, device=device)[None].expand(*(2*K,2*L))
-  idx_sib_k  = torch.arange(2*K, device=device)[:,None].expand(*(2*K,2*L))
-  idx_t  = (idx_sib_x * 0) + t 
-
-  node_par_k_exp_c = node_par_k_exp.clone()
-  ### sibling node
-  node_par_k_exp_c[:,:, idx_sib_x, idx_sib_k, idx_sib_x] = k_sib   
-  ### new external node
-  node_par_k_exp_c[:,:, idx_t,     idx_sib_k, idx_sib_x] = k_new
-  ### new internal node <- inherit the parent_k of sibling
-  node_par_k_exp_c[:,:, idx_t+L,   idx_sib_k, idx_sib_x] = node_par_k_exp[:,:,idx_sib_x, idx_sib_k, idx_sib_x]
-  
-  ###
-  node_par_exp_c     = node_par_exp_c[:,:,:,None,:].expand(*(B,M,2*L,2*K,2*L))
-
-  ### only allow joining to the active nodes
-  opt_prior_cond          = torch.cat([ 
-      torch.arange(L, device=device)<= max(0, t-1), 
-      (torch.arange(L, device=device)<= t-1) & (torch.arange(L, device=device)>0),   
-      ### first hidden node is root and irreplacible
-      ], 
-        dim=0).double()[None].expand(*(2*K,2*L))            
-  ## (2K,2L)
-  shape = opt_prior_cond.shape
-  # opt_prior_cond          = (opt_prior_cond+ EPS).reshape((-1)).log_softmax(0).reshape(opt_prior_cond.shape)
-  opt_prior_cond          = (opt_prior_cond+ EPS)
-  opt_prior_cond          = (opt_prior_cond / opt_prior_cond.sum()).log()
-  #  (opt_prior_cond+ EPS).reshape((-1)).log_softmax(0).reshape(opt_prior_cond.shape)
-  ## (B, M, 2K, 2L)
-  opt_prior_cond          = opt_prior_cond[None,None,:,:,]
-
-  return (node_par_exp_c, node_par_k_exp_c, opt_prior_cond)
-
-def select_bmkl(array, idx_array):
-  '''
-  idx_array reshaped to (B,M)
-  shape of (B, M, 2K, 2L, ...) -> (B,M,...)
-
-
-  node_ie_next    = select_bm(node_ie_exp, max_m_idx)
-  ### update parent and k
-  node_par_next   = select_bm(node_par_exp, max_m_idx)
-  node_par_k_next = select_bm(node_par_k_exp, max_m_idx)
-  
-  '''
-  _,_,K2,L2 = array.shape[:4]
-  B,M = idx_array.shape
-  device = array.device
-  max_m      = idx_array
-
-  factor     = max_m // (K2*L2)
-  max_m      = max_m  % (K2*L2)
-  idx_m      = factor
-
-  factor     = max_m // (L2)
-  max_m      = max_m  % (L2)
-  idx_k      = factor
-
-  idx_l      = max_m
-  idx_b      = torch.arange(B, device=device)[:,None].repeat((1,M))
-  sel = array[idx_b, idx_m, idx_k, idx_l]
-  return sel
-
+import sys
+DEBUG = '--debug' in sys.argv
 
 from attrdict import AttrDict
 # class Decoder(nn.Module):
 PI = 3.1415926
-class DBN(nn.Module):
+class CRBM(nn.Module):
   '''
-  Dynamic probabilistic tree models
+  A simple 3-layer RBM
   '''
   def __init__(self, 
       params,
       device=None,
-      # n_layers, 
-      # d_k, d_v, d_model, d_ff, n_heads,
-      # max_seq_len, tgt_vocab_size, dropout=0.1, weighted=False,
       ):
       super().__init__()
 
@@ -163,10 +34,14 @@ class DBN(nn.Module):
       M = params.M
       T = params.T
       H = params.H
+      Z = params.Z
       # self.params = AttrDict()
       if device is None:
         device = torch.device('cpu')
       self.device = device
+
+      method = params.method
+
 
       L = params.L
 
@@ -177,7 +52,10 @@ class DBN(nn.Module):
       self.b_k        = nn.Parameter(nn.Linear(1,(K-1)*H).weight.reshape((K-1,H)).to(device))
       self.w_hle      = nn.Parameter(nn.Linear(1,H*L*E).weight.reshape((H,L,E)).to(device))
       self.b_hle      = nn.Parameter(nn.Linear(1,L*E).weight.reshape((L,E)).to(device))
+      self.whz      = nn.Parameter(nn.Linear(1,H*Z).weight.reshape((H,Z)).to(device))
+      self.bh      = nn.Parameter(nn.Linear(1,H).weight.reshape((H,)).to(device))
       #  (2K, E,  E)
+
 
       ### precicision squared of gaussian
       # self.betasq     = torch.tensor(1.0).to(device)
@@ -237,7 +115,7 @@ class DBN(nn.Module):
     xbmd = bm_dict_next
     tok_external= xbmd.tok_external
 
-    node_h      = xbmd.node_h
+    # node_h      = xbmd.node_h
 
     xd_next = AttrDict(xbmd.copy())
     # xd_next = AttrDict(
@@ -284,7 +162,260 @@ class DBN(nn.Module):
     w_hle = self.w_hle
     b_hle = self.b_hle
 
-    inner_params = [node_h]
+    
+    
+    ### update the internal representaion
+
+
+    ### (B,L,E)
+    tok_emb = self.emb_vocab[tok_external]
+    node_z  = xbmd.node_z  ## (B,Z)
+    node_h  = xbmd.node_h ##(B,H)
+    whz = self.whz ### (H,Z) 
+    bh  = self.bh ### (Z)
+
+    # method = 'elbo'
+    # self.params.method  = method = 'mc'
+    # self.params.method  = method = 'elbo'
+    method = params.method
+    
+    lidx = range(0,t+1-is_mask_last)
+    lidx = list(lidx)
+    node_z= node_z.requires_grad_(True)
+    for i in range(inner_nstep):
+
+        if method == 'elbo':
+          if 0:
+
+            ### (B,L,E)
+            # node_h = 
+            # node_h.sigmoid()
+            # node_h_sig = node_h.sigmoid()
+            node_z_sig = node_z.sigmoid()
+
+            ### sigmoid(Wz + c), (B,H)
+            node_h_sig = (torch.einsum('bz,hz->bh', node_z_sig, whz) + bh[None]).sigmoid()
+            node_e = torch.tensordot( node_h_sig, (w_hle), 1).sigmoid()
+
+            x = torch.tensordot(node_e[:, lidx ], emb_vocab_w.T,1).log_softmax(-1)
+            # assert tok_external.max()+1<= params.V,(tok_external.max(),params.V)
+            x = torch.gather(x, index=tok_external[:, lidx, None],dim=-1).squeeze(-1)
+            lp_tok = x
+
+            ### (B,L)
+            # node_e = torch.einsum(node_h, 3
+            ## (B,L,H)
+
+            dh_blh = torch.einsum( 'hle,ble->blh',w_hle[:,lidx], tok_emb[:,lidx]*(1-node_e[:,lidx])) 
+            
+            dh1 = torch.einsum('blh,bl->bh', dh_blh, ( 1-lp_tok.exp()))
+            
+            # dh2 = torch.einsum('bh,hz->bz',)
+            dh2 = torch.einsum('bh,hz->bz', dh1*(1 - node_h_sig), whz)
+
+            dz1 = dh2
+            # dz1 = torch.einsum('bh,bhz->bz',(1 - node_h_sig),dz1)
+
+
+            lp_b = lp_tok.sum(1) 
+            # lp_b += torch.einsum('bh,bh->b',node_h_sig,node_h_sig.log()).detach() ### need to apply the entropy loss, because entropy is implicit on activation.
+            lp_b += torch.sum(
+            0.5* math.log(betasq/2/PI)
+            - 0.5* betasq * torch.square( node_z - 0)
+            ,(1)
+            ).detach()
+            ### update h
+            p_h_update = inner_lr
+            p_z_update = inner_lr
+
+
+            def arr_random_update(arr,arr_next, p,):
+                sel = (torch.rand_like(arr)<p)
+                # out = (~sel) *arr + sel*arr_next
+                # out = (~sel) *arr + sel*(arr_next+arr)*0.5
+                # out = (~sel) *arr + sel*(arr_next+arr)
+                # out = (~sel) *arr + sel*(arr_next*5+arr)
+                # out = (~sel) *arr + sel*(arr_next*0.01+arr)
+                out = (~sel) *arr + sel*(arr_next*0.1+arr)
+                # out = (~sel) *arr + sel*(arr_next*0.05+arr)
+                return out
+            # node_h = arr_random_update(node_h, (1-node_h_sig)*(dh1+dh2).sigmoid(), p_h_update)    
+            # node_h = arr_random_update(node_h, (1-node_h_sig)*(dh1+dh2), p_h_update)    
+            # node_h = node_h.detach()
+            # sel = (torch.rand_like(node_h)<p_h_update)    
+            # node_h[sel] = (dh1 + dh2)[sel] .sigmoid()
+            # node_h = (~sel)*node_h +sel*(dh1 + dh2).sigmoid()
+            # node_h = (dh1 + dh2).sigmoid()    
+
+
+            # dz1 = torch.einsum('bh,hz->bhz',node_h_sig, whz)
+            # dz1 = torch.einsum('bh,bhz->bz',(1 - h_p),dz1)
+
+
+            ### update z
+            # sel = (torch.rand_like(node_z)<p_z_update) 
+
+
+            # node_z = dz1.sigmoid()
+
+            node_z = arr_random_update(node_z, -betasq * node_z + (1-node_z_sig)*dz1,p_z_update)
+            node_h = node_h.detach()
+            node_z = node_z.detach()
+          
+          if 1:
+            inner_params = [node_z]
+
+            node_z_sig = node_z.sigmoid()
+
+            ### sigmoid(Wz + c), (B,H)
+            node_h_sig = (torch.einsum('bz,hz->bh', node_z_sig, whz) + bh[None]).sigmoid()
+            node_e = torch.tensordot( node_h_sig, (w_hle), 1).sigmoid()*10
+            # node_e = torch.tensordot( node_h_sig, (w_hle), 1)
+
+            x = torch.tensordot(node_e[:, lidx ], emb_vocab_w.T,1).log_softmax(-1)
+            # assert tok_external.max()+1<= params.V,(tok_external.max(),params.V)
+            x = torch.gather(x, index=tok_external[:, lidx, None],dim=-1).squeeze(-1)
+            lp_tok = x
+
+            
+            lp_b = lp_tok.sum(1) 
+            # lp_b += torch.einsum('bh,bh->b',node_h_sig,node_h_sig.log()).detach() ### need to apply the entropy loss, because entropy is implicit on activation.
+            lp_b += torch.sum(
+            0.5* math.log(betasq/2/PI)
+            - 0.5* betasq * torch.square( node_z - 0)
+            ,(1)
+            )
+            # inner_lr = 0.1
+            inner_lr = 0.15
+            # inner_lr = 0.1
+
+            for x in inner_params:
+              x.grad = None
+            opt_logp = lp_b
+            loss = - opt_logp.sum()
+            loss.backward(retain_graph=True)
+            # loss.backward([node_ie_exp], retain_graph=True)
+            for x in inner_params:
+              x.data.sub_( inner_lr * x.grad.data )
+              # x.grad = None
+            # print(f'loss={loss.detach().numpy()}')
+          # [x.grad =N]
+
+
+        if DEBUG:
+            print(f"[inner_i={i}]lp[shoud_incr]:{lp_b.sum().item():.2f}")
+            # print(f'{node_z[0].detach().cpu().numpy()[:5]}')
+            # x = (1-node_z_sig)*dz1
+            # x =  -betasq * node_z + (1-node_z_sig)*dz1
+            x = node_z
+            print(f'{x[0].detach().cpu().numpy()[:5]}')
+            # x = node_z.grad
+            # print(f'{x[0].detach().cpu().numpy()[:5]}')
+
+
+        # node_z[sel] = dz1[sel].sigmoid()
+    EPS = self.params.EPS
+
+
+    node_z
+    Z= params.Z
+    NS = params.inner_nsample
+
+    def add_noise(lat,betasq):
+      device = lat.device
+      sigma = (1./betasq)**0.5
+      noise = torch.normal(0., sigma, size=lat.shape, device=device)              
+      return (lat+noise, noise)
+
+
+    ### estimate elbo through sampling
+    lat = node_z
+
+    sigma = (1./betasq_2)**0.5
+    noise = torch.normal(0., sigma, size=lat.shape+(NS,), device=device)              
+    node_z_noise = node_z.unsqueeze(-1) + noise
+    node_h_noise = (torch.einsum('bzn,hz->bnh', node_z_noise.sigmoid(), whz) + bh[None,None,:]).sigmoid()
+    node_e_noise = torch.tensordot( node_h_noise, (w_hle), 1).sigmoid() 
+
+
+    x = torch.tensordot(node_e_noise[:, :,lidx ], emb_vocab_w.T,1).log_softmax(-1)
+    # assert tok_external.max()+1<= params.V,(tok_external.max(),params.V)
+    x = torch.gather(x, index=tok_external[:,None, lidx,None].expand((B,NS,len(lidx), 1)),dim=-1).squeeze(-1)
+    lp_tok = x
+
+    lp_next_token = (x.logsumexp(1) - math.log(NS))[:,lidx[-1]]
+    lp_cond           = lp_tok.sum((1,2))
+
+
+    lp_b = 0
+    lp_b += lp_tok.sum((2,))  ## (B,NS) 
+    lp_b += torch.sum( 
+                  0.5* math.log(betasq/2/PI)
+                  - 0.5* betasq * torch.square( node_z_noise - 0)
+                  
+                  - 0.5* math.log(betasq_2/2/PI)
+                  + 0.5*betasq_2 * torch.square(noise)
+                  ,axis=(1,)
+    )           
+
+    # lp_b += torch.einsum('bnh,bnh->bn', node_h_noise, (node_h_p+EPS).log()) ### need to apply the entropy loss, because entropy is implicit on activation.
+    # lp_b += torch.einsum('bnh,bnh->bn', 1-node_h_noise, (1-node_h_p+EPS).log()) ### need to apply the entropy loss, because entropy is implicit on activation.
+
+    # lp_b += math.log(0.5)*torch.ones_like(node_z_noise).sum(1)
+
+    # lp_b += -torch.einsum('bzn,bz->bn', node_z_noise, (node_z_p+EPS).log()) ### need to apply the entropy loss, because entropy is implicit on activation.
+    # lp_b += -torch.einsum('bzn,bz->bn', 1-node_z_noise, (1-node_z_p+EPS).log()) ### need to apply the entropy loss, because entropy is implicit on activation.
+
+    lp_b = lp_b.mean(-1)
+    # lp_b = (lp_b - torch.log(torch.tensor(NS,device=device))).logsumexp(-1)
+
+    if DEBUG:
+        print(f'[lp_b]{lp_b.sum().item():.3f}')
+
+    # if 1:
+    #     node_h = (torch.einsum('bz,hz->bh', node_z, whz) + bh[None]).sigmoid()
+
+    #     node_e = torch.tensordot( node_h, (w_hle), 1)
+    #     x = torch.tensordot(node_e[:, lidx ], emb_vocab_w.T,1).log_softmax(-1)
+    #     # assert tok_external.max()+1<= params.V,(tok_external.max(),params.V)
+    #     x = torch.gather(x, index=tok_external[:, lidx,None],dim=-1).squeeze(-1)
+    #     lp_tok = x
+        
+    #     lp_b = 0
+    #     lp_b += lp_tok.sum(1) 
+    #     lp_b += torch.einsum('bh,bh->b', node_h, node_h.log()) ### need to apply the entropy loss, because entropy is implicit on activation.
+    #     # node_z = node_z 
+    #     def bin_entropy(node_z):
+    #         val = (-(node_z)*(node_z+EPS).log() - (1-node_z)*(1-node_z+EPS).log())
+    #         return val
+
+    #     # lp_b += (-(node_z)*(node_z+EPS).log() - (1-node_z)*(1-node_z+EPS).log()).sum(1)
+    #     lp_b += bin_entropy(node_z).sum(1)
+    #     lp_b += bin_entropy(node_h).sum(1)
+    #     # -(node_z)*(node_z+EPS).log() - (1-node_z)*(1-node_z+EPS).log()).sum(1)
+
+
+
+        # lp_next_token = x = node_e[:,t:t+1].matmul(self.emb_vocab.T).log_softmax(-1)
+    # lp_next_token = x = node_e_[:,t:t+1].matmul(self.emb_vocab.T).log_softmax(-1)
+
+    # lp_cond           = torch.gather(lp_next_token,index=tok_external[:,t:t+1,None],dim=-1).squeeze(-1)
+      ### (B, 1)
+    xd_next.lp_ar = xbmd.lp_ar + lp_cond
+
+    xd_next.lp_next_token = lp_next_token
+    # print(xd_next.lp_next_token.shape)
+
+    xd_next.lp_joint_bm = lp_b[:,None]
+
+
+    ### update z 
+    #node_ie_next   -> # (B,  M,  2L,  E)
+    xd_next.node_h = node_h
+    return xd_next
+
+    breakpoint()
+    
 
     ### need to sample on z to estimate lower bound for lp_internal
     def add_noise(lat,betasq):
@@ -293,6 +424,12 @@ class DBN(nn.Module):
       noise = torch.normal(0., sigma, size=lat.shape, device=device)              
       return (lat+noise, noise)
 
+
+    # z =
+
+    
+        
+    inner_params = []
     def get_local_logp():
       #node_ie_exp        # (B,  K , H)
       node_h_noise, noise = add_noise(node_h, betasq_2)
@@ -304,6 +441,7 @@ class DBN(nn.Module):
           node_wke,
           torch.zeros((B,1,H),device=device) + 0.5,
           ],1)
+
       lp_internal = torch.sum(
 
                 0.5* math.log(betasq/2/PI)
@@ -333,7 +471,6 @@ class DBN(nn.Module):
     for i in range(inner_nstep):
       for x in inner_params:
         x.grad = None
-      
       opt_logp = 0.
       for i in range(inner_nsample):
         opt_logp_diff, node_e = get_local_logp()
@@ -390,19 +527,22 @@ class DBN(nn.Module):
     M = params.M
     T = params.T
     H = params.H
+    Z = params.Z
     B,L = tok_external.shape
+    EPS = params.EPS
     assert L<=T,(L,T)
     # tok_external     = tok_external                        ### (B, L)
 
     bm_dict_next = AttrDict(
       tok_external=tok_external,
+      node_z    = torch.zeros((B,Z),device=device) +EPS,                     ### (B, M)
+      node_h    = torch.zeros((B,H),device=device) + EPS,                     ### (B, M)
     #   lp_graph    = torch.zeros((B,M),device=device),                     ### (B, M)
     #   node_ie     = torch.zeros((B,M,2*L,E),device = device),             ### (B, M, 2*L, E)
     #   node_par    = torch.zeros((B,M,2*L),device = device).long() - 0,    ### (B, M, 2L)
     #   node_par_k  = torch.zeros((B,M,2*L),device = device).long() - 0,    ### (B, M, 2L)
       lp_joint_bm = torch.zeros((B,1),device=device)  , 
     #   node_h = torch.zeros((B,K,H),device=device,requires_grad=True),
-      node_h = torch.rand((B,K,H),device=device,requires_grad=True),
       
       lp_ar            = torch.zeros((B,1),device=device),
       max_t = min(L,T),
@@ -418,11 +558,17 @@ class DBN(nn.Module):
     max_t = bm_dict_next.max_t 
     
     if is_ar_loss:
-        min_t =  0
-        max_t = max_t
+        # if self.params.method=='elbo':
+        #     min_t =  1
+        #     max_t = max_t
+        # else:
+
+            min_t = max_t-1
+            max_t = max_t
     else:
-        min_t = max_t
-        max_t = max_t+1
+        min_t = max_t-1
+        max_t = max_t
+
     for t in range(min_t,  max_t):
         #   print(f'[t={t}]')
         bm_dict = self._inner_loop( bm_dict_next, t, max_t, is_ar_loss=is_ar_loss)
@@ -460,25 +606,27 @@ class DBN(nn.Module):
     max_t = tok_external.shape[1]
 
     xd_next.lp_next_token = None
-    
-    for t in range(0,  max_t):
-        if t+1>=L+1:
-          xd      = self._inner_loop( xd_next, t, max_t, is_ar_loss=True)
-          ### (B,V)
-          xp = xd.lp_next_token[:,None].exp().cumsum(dim=-1)
-          idx = (xp > torch.rand_like(xp)).max(dim=-1)[1]
-          tok_external[:,t:t+1] = idx
-        else:
-          xd      = self._inner_loop( xd_next, t, max_t, is_ar_loss=False)
 
-        xd_next = xd
+    if self.params.method=='elbo':
+        for t in range(0,  max_t):
+            if t+1>=L+1:
+                xd      = self._inner_loop( xd_next, t, max_t, is_ar_loss=True)
+                ### (B,V)
+                xp = xd.lp_next_token[:,None].exp().cumsum(dim=-1)
+                idx = (xp > torch.rand_like(xp)).max(dim=-1)[1]
+                tok_external[:,t:t+1] = idx
+            else:
+                xd      = self._inner_loop( xd_next, t, max_t, is_ar_loss=False)
+
+    #     xd_next = xd
     return tok_external
     
 
 
   def loss_joint_lp(self, tok_external, enc_inputs_len=None, is_ar_loss=False):
     lp_joint_bm = self.forward(tok_external, enc_inputs_len, is_ar_loss=is_ar_loss)[0]
-    loss = -( lp_joint_bm.logsumexp(-1).sum(0))
+    loss = -( lp_joint_bm.logsumexp(-1).mean(0))
+    # print(lp_joint_bm.shape)
     return loss
 
 
@@ -488,8 +636,7 @@ import time
 from numpy import array
 
 
-if __name__ == '__main__':
-
+def main():  
   T = L = 20
   K = 10
   E = 11
@@ -497,113 +644,6 @@ if __name__ == '__main__':
   M = 13
   EPS = 1E-8
 
-#   x = torch.rand((B,M,2*K,2*L,2*L,E))
-#   _, y = torch.rand((B,M,2*K,2*L)).reshape((B,-1)).topk(k=10,dim=-1)
-#   xx = select_bmkl(x,y)
-#   print(xx.shape)
-
-#   x = torch.rand((B,M,2*K,2*L,2*L,E,3))
-#   xx = select_bmkl(x,y)
-#   print(xx.shape)
-
-
-#   params = AttrDict(dict(
-#     L = 5,
-#     K = 7,
-#     E = 11,
-#     B = 3,
-#     M = 13,
-#     EPS = 1E-8,
-
-#   ))
-
-#   ### npar (B,M,2L)
-#   t = 3
-#   B = params.B
-#   ## 0, 1, 2 must has parents
-#   ## 0, 1 mst 
-#   node_par = torch.tensor([
-#     [ 5+1, 5+1,  5+2, 0, 0,
-#       0,   5+2,  5+0, 0, 0,
-#     ]
-#   ])[None].repeat((B,1,1))
-
-#   node_par_k = torch.tensor([
-#     [ 1,   6,   2,  -1, -1,
-#       -1,   7,   3,  -1, -1,
-#     ]
-#   ])[None].repeat((B,1,1))
-#   print(node_par.shape)
-#   print(node_par_k.shape)
-#   (npar, npark, opt_prior) = expand_graph_proposals(params, node_par, node_par_k, t=3, )
-
-
-#   idx_l = list(range(0,4)) + list(range(5,9))
-
-#   val = torch.cat([    node_par[0,0][None], node_par[0,0][None]*0+1, npar[0,0,:,0,idx_l].T],dim=0).numpy()
-#   print(val)
-
-#   '''
-#   array([[6, 6, 7, 0, 0, 0, 7, 5, 0, 0],
-#          [8, 6, 7, 8, 0, 0, 7, 5, 6, 0],
-#          [6, 8, 7, 8, 0, 0, 7, 5, 6, 0],
-#          [6, 6, 8, 8, 0, 0, 7, 5, 7, 0],
-#          [6, 6, 7, 8, 0, 0, 7, 5, 0, 0]])
-  
-#   '''  
-#   expected  = array([
-#        [6, 6, 7, 0, 0, 0, 7, 5, 0, 0],
-#        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-#        [8, 6, 7, 8, 0, 0, 7, 5, 6, 0],
-#        [6, 8, 7, 8, 0, 0, 7, 5, 6, 0],
-#        [6, 6, 8, 8, 0, 0, 7, 5, 7, 0],
-#        [6, 6, 7, 8, 0, 0, 7, 5, 0, 0],
-#        [6, 6, 7, 8, 0, 8, 7, 5, 0, 0],
-#        [6, 6, 7, 8, 0, 0, 8, 5, 7, 0],
-#        [6, 6, 7, 8, 0, 0, 7, 8, 5, 0],
-#        [6, 6, 7, 8, 0, 0, 7, 5, 0, 0]])
-#   assert (val == expected).all()
-
-
-#   val = torch.cat([    node_par_k[0,0][None], node_par_k[0,0][None]*0+1, npark[0,0,:,0,idx_l].T],dim=0).numpy()
-#   expected = array([
-#        [ 1,  6,  2, -1, -1, -1,  7,  3, -1, -1],
-#        [ 1,  1,  1,  1,  1,  1,  1,  1,  1,  1],
-#        [ 7,  6,  2,  0, -1, -1,  7,  3,  1, -1],
-#        [ 1,  7,  2,  0, -1, -1,  7,  3,  6, -1],
-#        [ 1,  6,  7,  0, -1, -1,  7,  3,  2, -1],
-#        [ 1,  6,  2,  0, -1, -1,  7,  3, -1, -1],
-#        [ 1,  6,  2,  0, -1,  7,  7,  3, -1, -1],
-#        [ 1,  6,  2,  0, -1, -1,  7,  3,  7, -1],
-#        [ 1,  6,  2,  0, -1, -1,  7,  7,  3, -1],
-#        [ 1,  6,  2,  0, -1, -1,  7,  3, -1, -1]])
-#   print(val)
-#   assert (val == expected).all()
-
-
-#   print(
-#     torch.cat([    node_par_k[0,0][None], node_par_k[0,0][None]*0+1, npark[0,0,:,1,idx_l].T],dim=0).numpy()
-#   )
-
-#   val = (opt_prior.exp()[0,0,:,idx_l] > 0.01).long().numpy()
-#   expected = array([
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0],
-#        [1, 1, 1, 0, 0, 1, 1, 0]])
-
-#   print(val)
-#   assert (val == expected).all()
 
 
   ### test fitting with synthetic data
@@ -613,6 +653,7 @@ if __name__ == '__main__':
     
     E = 11,
     H = 20,
+    Z = 21,
 
 
     B = 3,
@@ -633,12 +674,17 @@ if __name__ == '__main__':
   params.V = 30
   params.T = 60
   # device = None  
-  device = torch.device("cuda:0") 
-  model = DBN(params,device)
+
+  if '--cpu' in sys.argv:
+      device = torch.device("cpu") 
+
+  else:
+      device = torch.device("cuda:0") 
+  model = SRBM(params,device)
   tok_ext = torch.randint(0, params.V,size=(B,params.L),device=device)
   # print()
   torch.manual_seed(0)
-  tok_sampled, xdict = model.sample(tok_ext, t = 5)
+  tok_sampled = model.sample(tok_ext[:,:5], t = 5)
 
   print(tok_ext.shape)
   print(tok_sampled.shape)
@@ -685,3 +731,6 @@ if __name__ == '__main__':
   ### testing sampling from a fitted model
   
   breakpoint()
+if __name__ == '__main__':
+
+  main()

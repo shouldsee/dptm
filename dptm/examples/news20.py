@@ -1,5 +1,8 @@
 
  
+# from copyreg import pickle
+
+import pickle
 import os
 os.environ['KERAS_BACKEND']='torch'
  
@@ -21,75 +24,111 @@ from keras.preprocessing.text import Tokenizer
 from torch.utils.data import DataLoader, Dataset
 from dptm.examples.util import TextSamplerDataset
 from dptm.examples.util import cycle
-
+import torch
 
 class DatasetNews20(object):
     def __init__(self,path=None):
 
         categories = None
-
-        # newsgroups_train = fetch_20newsgroups(subset=['all'], shuffle=True, 
-        newsgroups_train = fetch_20newsgroups(data_home = __file__+'.dat', subset='all', shuffle=True, 
-                                            categories=categories,)
-
-        print (newsgroups_train.target_names)
-        print (len(newsgroups_train.data))
-        print("\n".join(newsgroups_train.data[0].split("\n")[10:15]))
-
-        texts = []
-
-        labels = newsgroups_train.target
-        texts  = newsgroups_train.data
-
+        if path is None:
+            path =  __file__+'.dat'
 
         MAX_SEQUENCE_LENGTH = 1000
-        MAX_NB_WORDS        = 20000
+        # MAX_NB_WORDS        = 20000
+        MAX_NB_WORDS        = 5000
+        self.V = MAX_NB_WORDS
 
-        tokenizer = Tokenizer(num_words=MAX_NB_WORDS)
-        tokenizer.fit_on_texts(texts)
-        sequences = tokenizer.texts_to_sequences(texts)
+        fn = f'{path}/data.pkl'
+        if not os.path.exists(fn):            
+            # newsgroups_train = fetch_20newsgroups(subset=['all'], shuffle=True, 
+            # newsgroups_train = fetch_20newsgroups(data_home = __file__+'.dat', subset='all', shuffle=True, 
+            newsgroups_train = fetch_20newsgroups(data_home = path, subset='train', shuffle=True, 
+                                                categories=categories,)
+
+                                            
+
+            print (newsgroups_train.target_names)
+            print (len(newsgroups_train.data))
+            print("\n".join(newsgroups_train.data[0].split("\n")[10:15]))
+
+            texts = []
+
+            labels = newsgroups_train.target
+            texts  = newsgroups_train.data
 
 
-        spidx = len(sequences)//5*4  
-        corp_train = sequences[:spidx]
-        corp_test  = sequences[spidx:]
 
-        data_train = sum(corp_train,[])
-        data_val = sum(corp_test,[])
-        # [0].join(corp_train)
-        # sum([],)
 
-        print (sequences[0][:10])
 
-        print([len(x) for x in sequences[:10]])
-        print([len(x) for x in texts[:10]])
+            tokenizer = Tokenizer(num_words=MAX_NB_WORDS,oov_token='<oov>')
+            tokenizer.fit_on_texts(texts)
+            sequences = tokenizer.texts_to_sequences(texts)
 
-        ### long-range interaction?
-        ### recursive structure of the 
-        print(sum([len(x) for x in sequences[:]]))
+
+            spidx = len(sequences)//5*4  
+            corp_train = sequences[:spidx]
+            corp_test  = sequences[spidx:]
+
+
+            print('[concating]')
+            def _concat(sent_list):
+                size = sum(map(len,sent_list))
+                xarr = np.zeros(size, dtype='int')
+                i = 0
+                for v in sent_list:
+                    xarr[i:i+len(v)] = v
+                    i = i+len(v)
+                return xarr
+
+            data_train = _concat(corp_train)
+            data_val  = _concat(corp_test)
+            data_train = torch.tensor(data_train)
+            data_val = torch.tensor(data_val)
+            # data_train,data_val = 
+            # data_train = sum(corp_train,[])
+            print('[concating_done]')
+            # print('[concating_done]')
+            # [0].join(corp_train)
+            # sum([],)
+
+            print (sequences[0][:10])
+
+            print([len(x) for x in sequences[:10]])
+            print([len(x) for x in texts[:10]])
+
+            ### long-range interaction?
+            ### recursive structure of the 
+            print(sum([len(x) for x in sequences[:]]))
+            with open(fn,'wb') as f:
+                # f.write(pick)
+                # pickle
+                pickle.dump((data_train,data_val,tokenizer), f)
+
+        else:
+            with open(fn,'rb') as f:
+                (data_train,data_val,tokenizer) = pickle.load(f)
+        self.tokenizer = tokenizer
+        self.V = tokenizer.num_words
+
 
         self.train_dataset = TextSamplerDataset(data_train, SEQ_LEN, NUM_SEGMENTS)
         self.val_dataset   = TextSamplerDataset(data_val, SEQ_LEN, NUM_SEGMENTS)
         self.train_loader  = cycle(DataLoader(self.train_dataset, batch_size = BATCH_SIZE))
         self.val_loader    = cycle(DataLoader(self.val_dataset, batch_size = BATCH_SIZE))
+        # print(self.tokenizer.word_index)
+        # breakpoint()
+    def decode_tokens(self,tokens):
+        tokens = tokens[None]
+        tokens = tokens.detach().cpu().numpy().tolist()
+        tokens = [list(x) for x in tokens]
+        # print(self.tokenizer.word_index.get(tokens[0,0]))
+        return self.tokenizer.sequences_to_texts(tokens)[0]
+        # return self.tokenizer.sequences_to_texts(tokens)
+        # [0]
 
 
 
-class DatasetEnwiki8(object):
-    DIR = os.path.dirname(os.path.realpath(__file__))
 
-    def __init__(self, path=f'{DIR}/data/enwik8.gz'):
-        self.path = path
-        with gzip.open(self.path) as file:
-            X = np.fromstring(file.read(int(95e6)), dtype=np.uint8)
-            trX, vaX = np.split(X, [int(90e6)])
-            data_train, data_val = torch.from_numpy(trX), torch.from_numpy(vaX)
-
-        self.train_dataset = TextSamplerDataset(data_train, SEQ_LEN, NUM_SEGMENTS)
-        self.val_dataset   = TextSamplerDataset(data_val, SEQ_LEN, NUM_SEGMENTS)
-        self.train_loader  = cycle(DataLoader(self.train_dataset, batch_size = BATCH_SIZE))
-        self.val_loader    = cycle(DataLoader(self.val_dataset, batch_size = BATCH_SIZE))
-    
 
 ####
 if 0:
@@ -130,29 +169,12 @@ SEQ_LEN = 15
 NUM_SEGMENTS = 1
 
 
-# def cycle(loader):
-#     while True:
-#         for data in loader:
-#             yield data
-
-# def decode_token(token):
-#     return str(chr(max(32, token)))
-
-# def decode_tokens(tokens):
-#     return ''.join(list(map(decode_token, tokens)))
-
-# import torch.optim as optim
-# from torch.nn import functional as F
-# from torch.utils.data import DataLoader, Dataset
-# import gzip
-# import os
-# DIR = os.path.dirname(os.path.realpath(__file__))
-
 
 # from examples.enwik8_simple import DatasetEnwiki8
 if __name__ == '__main__':
 
     dat = DatasetEnwiki8()
+    assert 0
 
     # breakpoint()
 

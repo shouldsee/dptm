@@ -1,2 +1,6 @@
 attrdict
 tqdm
+pandas
+scikit-learn==0.20.3
+keras
+tensorflow

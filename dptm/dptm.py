@@ -35,6 +35,9 @@ def expand_graph_proposals(params, node_par, node_par_k, t):
   EPS = params.EPS
   device = node_par.device
   L =  node_par.shape[2]//2
+  B = len(node_par)
+  M = params.M
+  # B = params.B
 
   ### npar points to current parent of this node
   ### store the parent information about each node
@@ -42,7 +45,7 @@ def expand_graph_proposals(params, node_par, node_par_k, t):
   node_par           # (B,  M,  2L,)  ## the index of parent
   # node_par_exp     # (B,  M,  2L,  O=2L)  ## the index of parent
   node_par_exp       = node_par[:,:,:,None,]
-  node_par_exp       = node_par_exp.repeat((1,1,1,2*L)).clone()
+  node_par_exp       = node_par_exp.expand(*(B,M,2*L,2*L)).clone()
   node_sib           = torch.arange(2*L, device=device)[None,None,None,:]
   
   sib_idx_1 = torch.arange(2*L, device=device)[:,None]
@@ -61,15 +64,15 @@ def expand_graph_proposals(params, node_par, node_par_k, t):
 
   node_par_k         # (B,  M,  2L,  1,  1, )  ## the type of connection to parent
   node_par_k         # (B,  M,  2L,  2K,  2L, )  ## the type of connection to parent
-  node_par_k_exp     = node_par_k[:,:,:,None,None].repeat((1,1,1,2*K,2*L))
+  node_par_k_exp     = node_par_k[:,:,:,None,None].expand(*(B,M,2*L,2*K,2*L))
 
-  k_new = torch.arange(2*K,device=device)[:,None].repeat((1,2*L))
+  k_new = torch.arange(2*K,device=device)[:,None].expand(*(2*K,2*L))
   k_sib = (k_new + K) % (2*K) 
 
 
   ## (K,L) matrix
-  idx_sib_x  = torch.arange(2*L, device=device)[None].repeat((2*K,1))
-  idx_sib_k  = torch.arange(2*K, device=device)[:,None].repeat((1,2*L))
+  idx_sib_x  = torch.arange(2*L, device=device)[None].expand(*(2*K,2*L))
+  idx_sib_k  = torch.arange(2*K, device=device)[:,None].expand(*(2*K,2*L))
   idx_t  = (idx_sib_x * 0) + t 
 
   node_par_k_exp_c = node_par_k_exp.clone()
@@ -81,7 +84,7 @@ def expand_graph_proposals(params, node_par, node_par_k, t):
   node_par_k_exp_c[:,:, idx_t+L,   idx_sib_k, idx_sib_x] = node_par_k_exp[:,:,idx_sib_x, idx_sib_k, idx_sib_x]
   
   ###
-  node_par_exp_c     = node_par_exp_c[:,:,:,None,:].repeat((1,1,1,2*K,1))
+  node_par_exp_c     = node_par_exp_c[:,:,:,None,:].expand(*(B,M,2*L,2*K,2*L))
 
   ### only allow joining to the active nodes
   opt_prior_cond          = torch.cat([ 
@@ -89,7 +92,7 @@ def expand_graph_proposals(params, node_par, node_par_k, t):
       (torch.arange(L, device=device)<= t-1) & (torch.arange(L, device=device)>0),   
       ### first hidden node is root and irreplacible
       ], 
-        dim=0).double()[None].repeat((2*K,1))            
+        dim=0).double()[None].expand(*(2*K,2*L))            
   ## (2K,2L)
   shape = opt_prior_cond.shape
   # opt_prior_cond          = (opt_prior_cond+ EPS).reshape((-1)).log_softmax(0).reshape(opt_prior_cond.shape)
@@ -262,7 +265,7 @@ class DPT(nn.Module):
 
     #node_ie            # (B,  M,  2L,  E)            
     #node_ie_exp        # (B,  M,  2L,  2K,  2L,  E)
-    node_ie_exp     = node_ie[:,:,:,None,None].repeat((1,1,1, 2*K, 2*L,1)).clone()
+    node_ie_exp     = node_ie[:,:,:,None,None].expand(*(B,M,2*L, 2*K, 2*L,E)).clone()
     node_ie_exp     = torch.tensor(node_ie_exp,device=device,requires_grad=True)
     # node_ie_exp     = node_ie_exp.detach().requires_grad_(True)
     
@@ -279,7 +282,7 @@ class DPT(nn.Module):
 
     is_mask_last     = is_ar_loss
     is_mask_last     = int(is_mask_last)
-    tok_external_exp = tok_external[:,None,:,None,None,None].repeat((1,M,1,2*K,2*L,1))
+    tok_external_exp = tok_external[:,None,:,None,None,None].expand(*(B,M,L,2*K,2*L,1))
 
     lp_graph_prop   = opt_prior_cond + lp_graph[:,:,None,None,]
     def get_local_logp():
@@ -287,7 +290,7 @@ class DPT(nn.Module):
       node_ie_exp_noise, noise = add_noise(node_ie_exp, betasq_2)
       node_ie_par_prop         = torch.gather(
         node_ie_exp, 
-        index=node_par_prop[:,:,:,:,:,None].repeat((1,1,1,1,1,E)), dim=2)
+        index=node_par_prop[:,:,:,:,:,None].expand(*(B,M,2*L,2*K,2*L,E)), dim=2)
       #node_ie_w_k_prop     # (B,  M,  2L,  2K,  2L, E)  
       node_ie_w_k_prop         = w_k_comb[node_par_k_prop,:,:]
 
@@ -499,9 +502,6 @@ class DPT(nn.Module):
           xd      = self._inner_loop( xd_next, t, max_t, is_ar_loss=False)
 
         xd_next = xd
-    # for t in range(max_t,max_t + ):
-
-    # xd_next
     return (tok_external, xd_next)
     
 
